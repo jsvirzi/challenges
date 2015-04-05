@@ -16,6 +16,8 @@
 #include <string>
 #include <vector>
 
+#include "http_request_parser.h"
+
 std::string parse(const char *input, const char *field);
 
 std::string parse_str(const std::string &s, const std::string &key) {
@@ -25,22 +27,6 @@ std::string parse_str(const std::string &s, const std::string &key) {
 int parse_int(const std::string &s, const std::string key) {
 	std::string tmp = parse(s.c_str(), key.c_str());
 	return atoi(tmp.c_str());
-};
-
-class HttpRequestParser {
-	public:
-	HttpRequestParser(const char *str, int msg_len);
-	HttpRequestParser(std::string &str);
-	~HttpRequestParser();
-	int get_content_length();
-	int get_content_length(const char *msg, int msg_len);
-	unsigned char *get_content(unsigned char *p = 0, int max_len = 0);
-	private:
-	void setup(const char *str, int msg_len);
-	char *buff;
-	unsigned char *content;
-	int content_length, buff_length;
-	std::vector<std::string> lines;
 };
 
 std::string form_output_command(std::string &url, std::string &key, int amount) {
@@ -78,45 +64,32 @@ std::string form_http_response() {
 	return response;
 }
 
-/*----------------------------------------------------------------------
- Portable function to set a socket into nonblocking mode.
- Calling this on a socket causes all future read() and write() calls on
- that socket to do only as much as they can immediately, and return 
- without waiting.
- If no data can be read or written, they return -1 and set errno
- to EAGAIN (or EWOULDBLOCK).
- Thanks to Bjorn Reese for this code.
-----------------------------------------------------------------------*/
-int setNonblocking(int fd)
-{
-    int flags;
+int set_nonblocking(int fd) {
 
-/* If they have O_NONBLOCK, use the Posix way to do it */
+	int flags;
+
 #if defined(O_NONBLOCK)
-printf("O_NONBLOCK is defined as %x\n", O_NONBLOCK);
-/* Fixme: O_NONBLOCK is defined but broken on SunOS 4.1.x and AIX 3.2.5. */
-if (-1 == (flags = fcntl(fd, F_GETFL, 0)))
-flags = 0;
-return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+/* posix way */
+	if((flags = fcntl(fd, F_GETFL, 0)) == -1) flags = 0;
+	return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 #else
-/* Otherwise, use the old way of doing it */
-flags = 1;
-return ioctl(fd, FIOBIO, &flags);
+/* the old school way of doing it */
+	flags = 1;
+	return ioctl(fd, FIOBIO, &flags);
 #endif
 }     
 
 bool run = true;
 static void stop (int sig) { run = false; }
 
-#define MAXCLIENTS 10
-main() {
+main(int argc, char **argv) {
 	int recv_port, xmit_port;
 	struct sockaddr_in servaddr;
 
 	std::string url = "127.0.0.1:8000";
 
 	recv_port = 8001;
-	xmit_port = 8000;
+	xmit_port = 8080;
 
 /* listen port */
 	int recv_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -126,7 +99,7 @@ main() {
 	servaddr.sin_port   = htons(recv_port);
 	bind(recv_fd, (struct sockaddr *) &servaddr, sizeof(servaddr));
 	listen(recv_fd,5);
-	setNonblocking(recv_fd); /* socket into nonblocking mode */
+	set_nonblocking(recv_fd); /* socket into nonblocking mode */
 
 /* transmit port */
 	int xmit_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -135,7 +108,7 @@ main() {
 	servaddr.sin_addr.s_addr = htonl(INADDR_ANY);
 	servaddr.sin_port   = htons(xmit_port);
 	bind(xmit_fd, (struct sockaddr *) &servaddr, sizeof(servaddr));
-	setNonblocking(xmit_fd); /* socket into nonblocking mode */
+	set_nonblocking(xmit_fd); /* socket into nonblocking mode */
 
 /* exception handling */
 	signal(SIGINT, stop); /* ^C */
@@ -143,8 +116,8 @@ main() {
 
 	while(run) {
 		int fd = accept(recv_fd, NULL, NULL);
-		setNonblocking(fd);
 		if(fd != -1) {
+			set_nonblocking(fd);
 #define BUFSIZE 1024
 			char buf[BUFSIZE];
 			bool loop = true;
@@ -163,6 +136,7 @@ main() {
 printf("key = %s. amount = %d\n", key.c_str(), amount);
 					std::string command = form_output_command(url, key, amount);
 printf("command = [%s]\n", command.c_str());
+					// write(xmit_fd, command.c_str(), command.length());
 #if 0
 					for(int i=0;i<(n-1);++i) {
 printf("byte %d = '%c' = %d = %x\n", i, buf[i], buf[i], buf[i]); 
@@ -187,92 +161,12 @@ printf("byte %d = '%c' = %d = %x\n", i, buf[i], buf[i], buf[i]);
 			}
 		}
 		
-		sleep(1);
+		// sleep(1);
 	}
 	printf("goodbye!\n");
 	close(recv_fd);
 	close(xmit_fd);
 	return 0;
-}
-
-void HttpRequestParser::setup(const char *str, int msg_len) {
-	content = 0;
-	int i, j;
-	buff_length = msg_len + 1;
-	buff = new char [ buff_length ]; /* handle null termination */
-	memcpy(buff, str, msg_len);
-	buff[msg_len] = 0; /* null-terminate if not already so */
-	get_content_length();
-	if(content_length > 0) {
-		content = new unsigned char [ content_length ];
-		unsigned char cha = buff[0], chb = buff[1], chc = buff[2], chd;
-		for(i=3;i<msg_len;++i) {
-			chd = buff[i];
-			if(cha == '\r' && chb == '\n' && chc == '\r' && chd == '\n') {
-				for(j=0;j<content_length;++j) content[j] = buff[i+1+j];
-				break;
-			}
-			cha = chb; chb = chc; chc = chd; /* comb filter */
-		}
-	}
-
-#if 0
-	for(i=0;i<msg_len;++i) {
-		ch = str[i];
-		buff[i] = (ch == 0xa || ch == 0xd) ? 0 : ch; /* replace '\n' and '\r' with 0 */
-	} 
-	for(i=0;i<msg_len;++i)
-#endif
-
-}
-
-HttpRequestParser::HttpRequestParser(const char *str, int msg_len) {
-	setup(str, msg_len);
-}
-
-HttpRequestParser::HttpRequestParser(std::string &str) {
-	setup(str.c_str(), str.length());
-}
-
-HttpRequestParser::~HttpRequestParser() {
-	if(buff) delete [] buff;
-	if(content) delete [] content;
-}
-
-int HttpRequestParser::get_content_length() {
-	return get_content_length(buff, buff_length);
-}
-
-int HttpRequestParser::get_content_length(const char *msg, int msg_len) {
-	bool found = false;
-	const char *field = "Content-Length:";
-	int i, j, k, field_len = strlen(field);
-	content_length = -1;
-	for(i=0;i<(msg_len - field_len);++i) {
-		if(found) break;
-		if(strncmp(&msg[i], field, field_len)) continue;
-		for(j=i+field_len;j<msg_len;++j) {
-			if(msg[j] == 0xa || msg[j] == 0xd) {
-				int line_length = j - i - field_len;
-#define TMPBUFSIZE 256
-				char tmp_str [ TMPBUFSIZE ]; /* more than ample */
-				if(line_length > TMPBUFSIZE) return -1;
-				for(k=0;k<line_length;++k) tmp_str[k] = msg[i+field_len+k];
-				tmp_str[k] = 0; /* null terminate */
-				content_length = atoi(tmp_str);
-printf("content_length = %d\n", content_length);
-				found = true;
-				break;
-			}
-		}
-	}
-	return content_length;
-}
-
-unsigned char *HttpRequestParser::get_content(unsigned char *p, int max_len) {
-	if(p && (content_length <= max_len)) memcpy(p, content, content_length);
-	else if(p) return 0;
-	return content;
 }
 
 /*** parse ***/
